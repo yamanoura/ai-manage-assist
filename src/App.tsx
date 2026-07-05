@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { signOut, type User } from "firebase/auth";
 import {
   Activity,
@@ -60,6 +60,15 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
 ];
 
 const uid = () => crypto.randomUUID();
+type EditorType = "task" | "habit" | "goal" | "feedback";
+type EditorItem = Task | Habit | Goal | Feedback;
+type EditorState = { type: EditorType; item?: EditorItem };
+
+const upsertById = <T extends { id: string }>(items: T[], item: T) =>
+  items.some((current) => current.id === item.id)
+    ? items.map((current) => (current.id === item.id ? item : current))
+    : [...items, item];
+
 const dateText = (value: string) =>
   new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric" }).format(
     new Date(`${value}T00:00:00`),
@@ -83,7 +92,7 @@ function Workspace({ user }: { user: User }) {
   const { data, setData, status, error } = useCloudData(user);
   const [view, setView] = useState<View>("today");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [modal, setModal] = useState<"task" | "habit" | "goal" | "feedback" | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   const todayTasks = data.tasks.filter((task) => task.due === today);
@@ -180,10 +189,11 @@ function Workspace({ user }: { user: User }) {
             wellness={todayWellness}
             onToggleTask={toggleTask}
             onDeleteTask={deleteTask}
+            onEditTask={(task) => setEditor({ type: "task", item: task })}
             onToggleHabit={toggleHabit}
             onWellness={saveWellness}
             onNavigate={selectView}
-            onAddTask={() => setModal("task")}
+            onAddTask={() => setEditor({ type: "task" })}
           />
         )}
         {view === "tasks" && (
@@ -192,21 +202,30 @@ function Workspace({ user }: { user: User }) {
             goals={data.goals}
             onToggle={toggleTask}
             onDelete={deleteTask}
-            onAdd={() => setModal("task")}
+            onEdit={(task) => setEditor({ type: "task", item: task })}
+            onAdd={() => setEditor({ type: "task" })}
           />
         )}
         {view === "habits" && (
           <HabitsView
             habits={data.habits}
             onToggle={toggleHabit}
-            onAdd={() => setModal("habit")}
+            onAdd={() => setEditor({ type: "habit" })}
+            onEdit={(habit) => setEditor({ type: "habit", item: habit })}
+            onDelete={(id) =>
+              setData((current) => ({
+                ...current,
+                habits: current.habits.filter((habit) => habit.id !== id),
+              }))
+            }
           />
         )}
         {view === "goals" && (
           <GoalsView
             goals={data.goals}
             tasks={data.tasks}
-            onAdd={() => setModal("goal")}
+            onAdd={() => setEditor({ type: "goal" })}
+            onEdit={(goal) => setEditor({ type: "goal", item: goal })}
             onDelete={(id) =>
               setData((current) => ({
                 ...current,
@@ -229,7 +248,8 @@ function Workspace({ user }: { user: User }) {
         {view === "feedback" && (
           <FeedbackView
             feedback={data.feedback}
-            onAdd={() => setModal("feedback")}
+            onAdd={() => setEditor({ type: "feedback" })}
+            onEdit={(item) => setEditor({ type: "feedback", item })}
             onDelete={(id) =>
               setData((current) => ({
                 ...current,
@@ -294,20 +314,23 @@ function Workspace({ user }: { user: User }) {
 
       <MobileNav view={view} onSelect={selectView} />
 
-      {modal && (
+      {editor && (
         <CreateModal
-          type={modal}
+          type={editor.type}
+          item={editor.item}
           goals={data.goals}
-          onClose={() => setModal(null)}
+          onClose={() => setEditor(null)}
           onSave={(item) => {
             setData((current) => {
-              if (modal === "task") return { ...current, tasks: [...current.tasks, item as Task] };
-              if (modal === "habit")
-                return { ...current, habits: [...current.habits, item as Habit] };
-              if (modal === "goal") return { ...current, goals: [...current.goals, item as Goal] };
-              return { ...current, feedback: [...current.feedback, item as Feedback] };
+              if (editor.type === "task")
+                return { ...current, tasks: upsertById(current.tasks, item as Task) };
+              if (editor.type === "habit")
+                return { ...current, habits: upsertById(current.habits, item as Habit) };
+              if (editor.type === "goal")
+                return { ...current, goals: upsertById(current.goals, item as Goal) };
+              return { ...current, feedback: upsertById(current.feedback, item as Feedback) };
             });
-            setModal(null);
+            setEditor(null);
           }}
         />
       )}
@@ -422,6 +445,7 @@ function TodayView({
   wellness,
   onToggleTask,
   onDeleteTask,
+  onEditTask,
   onToggleHabit,
   onWellness,
   onNavigate,
@@ -434,6 +458,7 @@ function TodayView({
   wellness?: WellnessEntry;
   onToggleTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
+  onEditTask: (task: Task) => void;
   onToggleHabit: (id: string) => void;
   onWellness: (entry: WellnessEntry) => void;
   onNavigate: (view: View) => void;
@@ -487,6 +512,7 @@ function TodayView({
                 goals={goals}
                 onToggle={onToggleTask}
                 onDelete={onDeleteTask}
+                onEdit={onEditTask}
               />
             ))}
           </div>
@@ -562,11 +588,13 @@ function TaskRow({
   goals,
   onToggle,
   onDelete,
+  onEdit,
 }: {
   task: Task;
   goals: Goal[];
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
+  onEdit: (task: Task) => void;
 }) {
   const goal = goals.find((item) => item.id === task.goalId);
   const confirmDelete = () => {
@@ -594,6 +622,14 @@ function TaskRow({
         </span>
       </button>
       <span className="task-date">{task.due === today ? "今日" : dateText(task.due)}</span>
+      <button
+        className="item-edit"
+        onClick={() => onEdit(task)}
+        aria-label={`${task.title}を修正`}
+        title="タスクを修正"
+      >
+        <Pencil size={15} />
+      </button>
       <button
         className="task-delete"
         onClick={confirmDelete}
@@ -676,12 +712,14 @@ function TasksView({
   goals,
   onToggle,
   onDelete,
+  onEdit,
   onAdd,
 }: {
   tasks: Task[];
   goals: Goal[];
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
+  onEdit: (task: Task) => void;
   onAdd: () => void;
 }) {
   const [filter, setFilter] = useState<"all" | "open" | "done">("all");
@@ -712,6 +750,7 @@ function TasksView({
               goals={goals}
               onToggle={onToggle}
               onDelete={onDelete}
+              onEdit={onEdit}
             />
           ))}
           {!filtered.length && <Empty text="該当するタスクはありません" />}
@@ -725,10 +764,14 @@ function HabitsView({
   habits,
   onToggle,
   onAdd,
+  onEdit,
+  onDelete,
 }: {
   habits: Habit[];
   onToggle: (id: string) => void;
   onAdd: () => void;
+  onEdit: (habit: Habit) => void;
+  onDelete: (id: string) => void;
 }) {
   return (
     <div className="page page-enter">
@@ -739,15 +782,39 @@ function HabitsView({
         onClick={onAdd}
       />
       <div className="cards-grid">
+        {!habits.length && <Empty text="習慣はまだありません" />}
         {habits.map((habit) => {
           const completed = habit.completedDates.includes(today);
           return (
             <section className="card habit-detail" key={habit.id}>
+              <div className="card-edit-actions">
+                <button
+                  className="item-edit"
+                  onClick={() => onEdit(habit)}
+                  aria-label={`${habit.title}を修正`}
+                  title="習慣を修正"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="item-delete"
+                  onClick={() => {
+                    if (window.confirm(`「${habit.title}」を削除しますか？`)) onDelete(habit.id);
+                  }}
+                  aria-label={`${habit.title}を削除`}
+                  title="習慣を削除"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
               <span className="habit-icon large" style={{ color: habit.color, background: `${habit.color}17` }}>
                 <Activity size={22} />
               </span>
               <h3>{habit.title}</h3>
-              <p>{habit.target}</p>
+              <p className="habit-target">{habit.target}</p>
+              {habit.description && (
+                <p className="habit-description">{habit.description}</p>
+              )}
               <div className="streak-big"><Flame size={20} /> {habit.streak}<small>日継続</small></div>
               <button className={`complete-button ${completed ? "done" : ""}`} onClick={() => onToggle(habit.id)}>
                 {completed ? <><Check size={18} /> 今日もできた</> : "今日の記録をつける"}
@@ -764,12 +831,14 @@ function GoalsView({
   goals,
   tasks,
   onAdd,
+  onEdit,
   onDelete,
   onProgress,
 }: {
   goals: Goal[];
   tasks: Task[];
   onAdd: () => void;
+  onEdit: (goal: Goal) => void;
   onDelete: (id: string) => void;
   onProgress: (id: string, progress: number) => void;
 }) {
@@ -797,6 +866,14 @@ function GoalsView({
                 </div>
                 <div className="goal-card-actions">
                   <strong style={{ color: goal.color }}>{goal.progress}%</strong>
+                  <button
+                    className="item-edit"
+                    onClick={() => onEdit(goal)}
+                    aria-label={`${goal.title}を修正`}
+                    title="目標を修正"
+                  >
+                    <Pencil size={15} />
+                  </button>
                   <button
                     className="goal-delete"
                     onClick={() => {
@@ -838,11 +915,13 @@ function GoalsView({
 function FeedbackView({
   feedback,
   onAdd,
+  onEdit,
   onDelete,
   onStatus,
 }: {
   feedback: Feedback[];
   onAdd: () => void;
+  onEdit: (item: Feedback) => void;
   onDelete: (id: string) => void;
   onStatus: (id: string, status: Feedback["status"]) => void;
 }) {
@@ -872,6 +951,14 @@ function FeedbackView({
                   onClick={() => onStatus(item.id, nextStatus[item.status])}
                 >
                   {statusText[item.status]}
+                </button>
+                <button
+                  className="item-edit"
+                  onClick={() => onEdit(item)}
+                  aria-label={`${item.content}を修正`}
+                  title="指摘を修正"
+                >
+                  <Pencil size={15} />
                 </button>
                 <button
                   className="feedback-delete"
@@ -1183,17 +1270,73 @@ function WellnessView({
   entries: WellnessEntry[];
   onSave: (entry: WellnessEntry) => void;
 }) {
-  const current = entries.find((entry) => entry.date === today);
+  const recordRef = useRef<HTMLElement>(null);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const selected = entries.find((entry) => entry.date === selectedDate);
   const [form, setForm] = useState<WellnessEntry>(
-    current ?? { date: today, mood: 3, energy: 3, stress: 3, sleep: 7, note: "" },
+    selected ?? { date: selectedDate, mood: 3, energy: 3, stress: 3, sleep: 7, note: "" },
   );
-  const recent = entries.slice(-7);
+  const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date));
+  const recent = sorted.slice(0, 7).reverse();
+  const selectedDateText = new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(new Date(`${selectedDate}T00:00:00`));
+
+  useEffect(() => {
+    setForm(
+      selected ?? {
+        date: selectedDate,
+        mood: 3,
+        energy: 3,
+        stress: 3,
+        sleep: 7,
+        note: "",
+      },
+    );
+  }, [selected, selectedDate]);
+
+  const showRecord = (date: string, scrollToRecord = false) => {
+    setSelectedDate(date);
+    if (scrollToRecord) {
+      window.requestAnimationFrame(() => {
+        recordRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  };
+
   return (
     <div className="page page-enter">
       <PageIntro title="調子を知ることから、整える。" text="診断ではなく、自分の波に気づくための記録です。" />
       <div className="wellness-grid">
-        <section className="card record-card">
-          <SectionHead title="今日の記録" meta={current ? "更新できます" : "未記録"} />
+        <section className="card record-card" ref={recordRef}>
+          <div className="wellness-record-head">
+            <div>
+              <h3>{selectedDate === today ? "今日の記録" : selectedDateText}</h3>
+              <span>{selected ? "記録済み・更新できます" : "未記録"}</span>
+            </div>
+            <label className="wellness-date-picker">
+              <span>日付を選ぶ</span>
+              <input
+                type="date"
+                max={today}
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+              />
+            </label>
+          </div>
+          <div className={`selected-record-indicator ${selected ? "saved" : "new"}`} aria-live="polite">
+            <CalendarDays size={18} />
+            <div>
+              <span>現在表示している記録</span>
+              <strong>{selectedDateText}</strong>
+            </div>
+            <span className="selected-record-state">
+              {selected ? "保存済みデータを表示中" : "この日の記録は未登録"}
+            </span>
+          </div>
           <RangeField label="気分" low="つらい" high="よい" value={form.mood} onChange={(mood) => setForm({ ...form, mood })} />
           <RangeField label="エネルギー" low="少ない" high="十分" value={form.energy} onChange={(energy) => setForm({ ...form, energy })} />
           <RangeField label="ストレス" low="低い" high="高い" value={form.stress} onChange={(stress) => setForm({ ...form, stress })} />
@@ -1208,16 +1351,23 @@ function WellnessView({
             <span>ひとことメモ</span>
             <textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="今日あったこと、気づいたこと" />
           </label>
-          <button className="primary-button full" onClick={() => onSave(form)}>今日の状態を保存</button>
+          <button className="primary-button full" onClick={() => onSave(form)}>
+            {selected ? "この日の記録を更新" : "この日の状態を保存"}
+          </button>
         </section>
         <section className="card chart-card">
-          <SectionHead title="最近のコンディション" meta="過去7日" />
+          <SectionHead title="最近のコンディション" meta="直近7件" />
           <div className="bar-chart">
             {recent.map((entry) => (
-              <div className="bar-column" key={entry.date}>
+              <button
+                className={`bar-column ${entry.date === selectedDate ? "selected" : ""}`}
+                key={entry.date}
+                onClick={() => showRecord(entry.date)}
+                aria-label={`${dateText(entry.date)}の記録を見る`}
+              >
                 <div className="bar-value" style={{ height: `${entry.mood * 16}%` }} />
                 <small>{dateText(entry.date).replace("月", "/")}</small>
-              </div>
+              </button>
             ))}
           </div>
           <div className="wellness-summary">
@@ -1226,6 +1376,33 @@ function WellnessView({
           </div>
         </section>
       </div>
+      <section className="card wellness-history">
+        <SectionHead title="これまでの記録" meta={`${sorted.length}件`} />
+        {!sorted.length && <Empty text="心身の記録はまだありません" />}
+        <div className="wellness-history-list">
+          {sorted.map((entry) => (
+            <button
+              key={entry.date}
+              className={entry.date === selectedDate ? "selected" : ""}
+              onClick={() => showRecord(entry.date, true)}
+              aria-current={entry.date === selectedDate ? "true" : undefined}
+            >
+              <span className="wellness-history-date">
+                <CalendarDays size={16} />
+                <strong>{new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "short", day: "numeric" }).format(new Date(`${entry.date}T00:00:00`))}</strong>
+              </span>
+              <span>気分 <strong>{entry.mood}/5</strong></span>
+              <span>活力 <strong>{entry.energy}/5</strong></span>
+              <span>ストレス <strong>{entry.stress}/5</strong></span>
+              <span>睡眠 <strong>{entry.sleep}時間</strong></span>
+              <small>{entry.note || "メモなし"}</small>
+              <span className="wellness-history-open-state">
+                {entry.date === selectedDate ? <><Check size={15} /> 表示中</> : <ChevronRight size={17} />}
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1344,38 +1521,45 @@ function Empty({ text }: { text: string }) {
 
 function CreateModal({
   type,
+  item,
   goals,
   onClose,
   onSave,
 }: {
-  type: "task" | "habit" | "goal" | "feedback";
+  type: EditorType;
+  item?: EditorItem;
   goals: Goal[];
   onClose: () => void;
   onSave: (item: Task | Habit | Goal | Feedback) => void;
 }) {
-  const [title, setTitle] = useState("");
-  const [detail, setDetail] = useState("");
-  const [extra, setExtra] = useState("");
-  const [goalId, setGoalId] = useState("");
-  const [priority, setPriority] = useState<Priority>("medium");
+  const task = type === "task" ? item as Task | undefined : undefined;
+  const habit = type === "habit" ? item as Habit | undefined : undefined;
+  const goal = type === "goal" ? item as Goal | undefined : undefined;
+  const feedback = type === "feedback" ? item as Feedback | undefined : undefined;
+  const [title, setTitle] = useState(task?.title ?? habit?.title ?? goal?.title ?? feedback?.content ?? "");
+  const [detail, setDetail] = useState(task?.due ?? habit?.target ?? goal?.deadline ?? feedback?.cause ?? "");
+  const [extra, setExtra] = useState(habit?.description ?? goal?.description ?? feedback?.action ?? "");
+  const [goalId, setGoalId] = useState(task?.goalId ?? "");
+  const [priority, setPriority] = useState<Priority>(task?.priority ?? "medium");
+  const editing = Boolean(item);
   const labels = {
-    task: { title: "タスクを追加", field: "やること", placeholder: "例：企画書の構成を考える" },
-    habit: { title: "習慣を追加", field: "習慣名", placeholder: "例：朝のストレッチ" },
-    goal: { title: "目標を追加", field: "目標", placeholder: "例：心身に余裕のある毎日をつくる" },
-    feedback: { title: "気づきを追加", field: "気づき・指摘", placeholder: "例：説明は結論から伝える" },
+    task: { title: editing ? "タスクを修正" : "タスクを追加", field: "やること", placeholder: "例：企画書の構成を考える" },
+    habit: { title: editing ? "習慣を修正" : "習慣を追加", field: "習慣名", placeholder: "例：朝のストレッチ" },
+    goal: { title: editing ? "目標を修正" : "目標を追加", field: "目標", placeholder: "例：心身に余裕のある毎日をつくる" },
+    feedback: { title: editing ? "気づきを修正" : "気づきを追加", field: "気づき・指摘", placeholder: "例：説明は結論から伝える" },
   }[type];
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!title.trim()) return;
     if (type === "task") {
-      onSave({ id: uid(), title, due: detail || today, priority, completed: false, goalId: goalId || undefined });
+      onSave({ id: task?.id ?? uid(), title: title.trim(), due: detail || today, priority, completed: task?.completed ?? false, goalId: goalId || undefined });
     } else if (type === "habit") {
-      onSave({ id: uid(), title, target: detail || "毎日", streak: 0, completedDates: [], color: "#477a65" });
+      onSave({ id: habit?.id ?? uid(), title: title.trim(), target: detail || "毎日", description: extra.trim(), streak: habit?.streak ?? 0, completedDates: habit?.completedDates ?? [], color: habit?.color ?? "#477a65" });
     } else if (type === "goal") {
-      onSave({ id: uid(), title, description: extra, deadline: detail || today, progress: 0, color: "#c16d4e" });
+      onSave({ id: goal?.id ?? uid(), title: title.trim(), description: extra, deadline: detail || today, progress: goal?.progress ?? 0, color: goal?.color ?? "#c16d4e" });
     } else {
-      onSave({ id: uid(), content: title, cause: detail || "まだ整理できていない", action: extra || "次回、意識して観察する", category: "自分の気づき", status: "open", createdAt: today });
+      onSave({ id: feedback?.id ?? uid(), content: title.trim(), cause: detail || "まだ整理できていない", action: extra || "次回、意識して観察する", category: feedback?.category ?? "自分の気づき", status: feedback?.status ?? "open", createdAt: feedback?.createdAt ?? today });
     }
   };
 
@@ -1391,7 +1575,12 @@ function CreateModal({
             <label className="field"><span>関連する目標</span><select value={goalId} onChange={(e) => setGoalId(e.target.value)}><option value="">なし</option>{goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title}</option>)}</select></label>
           </>
         )}
-        {type === "habit" && <label className="field"><span>頻度・目安</span><input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="例：毎朝 10分" /></label>}
+        {type === "habit" && (
+          <>
+            <label className="field"><span>頻度・目安</span><input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="例：毎朝 10分" /></label>
+            <label className="field"><span>習慣の詳細</span><textarea value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="取り組む内容、目的、続けるための工夫など" /></label>
+          </>
+        )}
         {type === "goal" && (
           <>
             <label className="field"><span>期限</span><input type="date" value={detail} onChange={(e) => setDetail(e.target.value)} /></label>
@@ -1404,7 +1593,7 @@ function CreateModal({
             <label className="field"><span>次に試すこと</span><textarea value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="具体的な行動を小さく書く" /></label>
           </>
         )}
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>キャンセル</button><button className="primary-button" type="submit">保存する</button></div>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>キャンセル</button><button className="primary-button" type="submit">{editing ? "変更を保存" : "保存する"}</button></div>
       </form>
     </div>
   );

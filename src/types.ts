@@ -23,6 +23,7 @@ export interface Habit {
   id: string;
   title: string;
   target: string;
+  description?: string;
   streak: number;
   completedDates: string[];
   color: string;
